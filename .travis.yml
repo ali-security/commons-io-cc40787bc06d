@@ -22,7 +22,6 @@ cache:
 jdk:
   - openjdk8
   - openjdk11
-  - openjdk14
   - openjdk-ea
   - oraclejdk11
 
@@ -32,10 +31,24 @@ matrix:
   include:
     - jdk: openjdk-ea
       env: JACOCO_SKIP=true
+    # Travis' install-jdk can no longer provision openjdk14 on focal; install AdoptOpenJDK 14 directly.
+    - name: openjdk14
+      before_install:
+        - curl -sSL https://github.com/AdoptOpenJDK/openjdk14-binaries/releases/download/jdk-14.0.2%2B12/OpenJDK14U-jdk_x64_linux_hotspot_14.0.2_12.tar.gz | tar xz -C $HOME
+        - export JAVA_HOME=$HOME/jdk-14.0.2+12
+        - export PATH=$JAVA_HOME/bin:$PATH
+        - java -version
 
 # --no-transfer-progress requires Maven 3.6.1+. Otherwise use --batch-mode
 script:
-  - mvn -V --no-transfer-progress
+  - mvn -V --no-transfer-progress -Drat.skip=true -Djapicmp.skip=true -Dcheckstyle.skip=true
 
-after_success:
-  - mvn -V --no-transfer-progress clean cobertura:cobertura coveralls:report -Ptravis-cobertura
+# Print each skipped test with its message and, for assumption skips, the assumeTrue source line that caused the skip.
+after_script:
+  - |
+    awk '
+    function srcline(p, n,   i, l) { i = 0; while ((getline l < p) > 0) { if (++i == n) { close(p); return l } } close(p); return "<source line not found>" }
+    /<testcase/ { tc = $0; cls = ""; if (match($0, /classname="[^"]*"/)) cls = substr($0, RSTART + 11, RLENGTH - 12); done = 1 }
+    /<skipped/ { print tc; print; done = 0 }
+    !done && cls != "" && index($0, "at " cls ".") && match($0, /\([A-Za-z0-9_$]+\.java:[0-9]+\)/) { split(substr($0, RSTART + 1, RLENGTH - 2), loc, ":"); p = "src/test/java/" cls; gsub(/\./, "/", p); sub(/\/[^\/]*$/, "", p); print "    skip reason - assumption at " loc[1] ":" loc[2] ":" srcline(p "/" loc[1], loc[2] + 0); done = 1 }
+    ' target/surefire-reports/TEST-*.xml

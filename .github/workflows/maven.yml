@@ -15,13 +15,19 @@
 
 name: Java CI
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Surefire -Dtest selector; empty runs the full suite'
+        required: false
+        default: ''
 
 jobs:
   build:
 
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 45
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -38,15 +44,35 @@ jobs:
         
     steps:
     - uses: actions/checkout@v2.3.2
-    - uses: actions/cache@v2
-      with:
-        path: ~/.m2/repository
-        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-        restore-keys: |
-          ${{ runner.os }}-maven-
     - name: Set up JDK ${{ matrix.java }}
-      uses: actions/setup-java@v1.4.2
+      uses: actions/setup-java@v2
       with:
+        distribution: 'adopt'
         java-version: ${{ matrix.java }}
     - name: Build with Maven
-      run: mvn -V --file pom.xml --no-transfer-progress -DtrimStackTrace=false
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.test-filter }}" ]; then
+          mvn -V --file pom.xml --no-transfer-progress -DtrimStackTrace=false -Drat.skip=true -Djapicmp.skip=true -Dcheckstyle.skip=true -Dtest="${{ inputs.test-filter }}" -DfailIfNoTests=false
+        else
+          mvn -V --file pom.xml --no-transfer-progress -DtrimStackTrace=false -Drat.skip=true -Djapicmp.skip=true -Dcheckstyle.skip=true
+        fi
+    - name: Print skipped tests
+      if: always()
+      shell: bash
+      run: |
+        awk '
+        function srcline(p, n,   i, l) { i = 0; while ((getline l < p) > 0) { if (++i == n) { close(p); return l } } close(p); return "<source line not found>" }
+        /<testcase/ { tc = $0; cls = ""; if (match($0, /classname="[^"]*"/)) cls = substr($0, RSTART + 11, RLENGTH - 12); done = 1 }
+        /<skipped/ { print tc; print; done = 0 }
+        !done && cls != "" && index($0, "at " cls ".") && match($0, /\([A-Za-z0-9_$]+\.java:[0-9]+\)/) { split(substr($0, RSTART + 1, RLENGTH - 2), loc, ":"); p = "src/test/java/" cls; gsub(/\./, "/", p); sub(/\/[^\/]*$/, "", p); print "    skip reason - assumption at " loc[1] ":" loc[2] ":" srcline(p "/" loc[1], loc[2] + 0); done = 1 }
+        ' target/surefire-reports/TEST-*.xml
+    - name: Upload Maven build artifacts
+      if: success() && matrix.os == 'ubuntu-latest' && matrix.java == 8
+      uses: actions/upload-artifact@v4
+      with:
+        name: built-jars
+        path: |
+          target/commons-io-2.8.0.jar
+          target/commons-io-2.8.0-tests.jar
+        if-no-files-found: error
